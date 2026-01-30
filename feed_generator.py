@@ -1,7 +1,17 @@
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 from feedgen.feed import FeedGenerator
 from config import BASE_URL, AUDIO_FORMAT
 from downloader import get_audio_file_size
+
+
+def is_valid_itunes_image_url(url: str) -> bool:
+    """Check if URL is valid for iTunes image (must end with .png or .jpg)."""
+    if not url:
+        return False
+    parsed = urlparse(url)
+    path = parsed.path.lower()
+    return path.endswith('.png') or path.endswith('.jpg') or path.endswith('.jpeg')
 
 
 def generate_feed(channel: dict, episodes: list) -> str:
@@ -77,7 +87,7 @@ def generate_feed(channel: dict, episodes: list) -> str:
 
         # iTunes specific
         fe.podcast.itunes_duration(ep.get('duration', 0))
-        if ep.get('thumbnail_url'):
+        if ep.get('thumbnail_url') and is_valid_itunes_image_url(ep['thumbnail_url']):
             fe.podcast.itunes_image(ep['thumbnail_url'])
 
     return fg.rss_str(pretty=True).decode('utf-8')
