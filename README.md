@@ -73,6 +73,34 @@ You can add channels using any of these formats:
 3. In your podcast app, add a podcast by URL
 4. Paste the RSS feed URL
 
+## Authentication
+
+You can protect your feeds with authentication to prevent unauthorized access. Two methods are available:
+
+### HTTP Basic Authentication
+
+Requires username and password to access the feed. Most podcast apps support this.
+
+1. In the web UI, select "Password (HTTP Basic)" for a channel
+2. Enter a username and password, then click Save
+3. Use the feed URL format: `http://username:password@yourserver:5000/feed/1`
+
+Supported by: Apple Podcasts, Overcast, Pocket Casts, and most other apps.
+
+### Secret Token URL
+
+Uses a long random token in the URL itself. No password prompt needed.
+
+1. In the web UI, select "Secret Token URL" for a channel
+2. Click Save - a new token will be generated
+3. Use the token URL shown: `http://yourserver:5000/feed/t/your-secret-token`
+
+The token URL is unguessable, but anyone with the URL can access the feed. Keep it private.
+
+### Disabling Authentication
+
+Select "None (Public)" to make a feed publicly accessible again.
+
 ## API Reference
 
 ### List Channels
@@ -119,6 +147,34 @@ Manually triggers a refresh of all channels.
 POST /refresh/<channel_id>
 ```
 Manually triggers a refresh of a specific channel.
+
+### Get Feed by Token
+```
+GET /feed/t/<token>
+```
+Returns the podcast RSS feed using token authentication.
+
+### Serve Audio by Token
+```
+GET /audio/t/<token>/<filename>
+```
+Serves audio files using token authentication.
+
+### Update Channel Authentication
+```
+POST /channels/<id>/auth
+Content-Type: application/json
+
+// For no auth:
+{"auth_type": "none"}
+
+// For HTTP Basic:
+{"auth_type": "basic", "username": "user", "password": "pass"}
+
+// For token:
+{"auth_type": "token"}
+```
+Updates authentication settings for a channel. Token auth returns the generated token.
 
 ## Configuration
 
@@ -320,6 +376,10 @@ youtube-podcast/
 | name | TEXT | Channel name |
 | url | TEXT | Channel URL |
 | added_at | TIMESTAMP | When the channel was added |
+| auth_type | TEXT | Authentication type: 'none', 'basic', or 'token' |
+| username | TEXT | Username for HTTP Basic auth |
+| password_hash | TEXT | SHA-256 hash of password |
+| secret_token | TEXT | Secret token for token-based auth |
 
 ### Episodes Table
 | Column | Type | Description |

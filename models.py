@@ -1,4 +1,6 @@
 import sqlite3
+import secrets
+import hashlib
 from datetime import datetime
 from contextlib import contextmanager
 from config import DATABASE_PATH
@@ -9,6 +11,16 @@ def get_connection():
     conn = sqlite3.connect(DATABASE_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def hash_password(password: str) -> str:
+    """Hash a password using SHA-256."""
+    return hashlib.sha256(password.encode()).hexdigest()
+
+
+def generate_token() -> str:
+    """Generate a secure random token."""
+    return secrets.token_urlsafe(32)
 
 
 @contextmanager
@@ -31,9 +43,25 @@ def init_db():
                 youtube_channel_id TEXT UNIQUE NOT NULL,
                 name TEXT NOT NULL,
                 url TEXT NOT NULL,
-                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                auth_type TEXT DEFAULT 'none',
+                username TEXT,
+                password_hash TEXT,
+                secret_token TEXT
             )
         """)
+
+        # Migration: add auth columns if they don't exist
+        cursor = conn.execute("PRAGMA table_info(channels)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if 'auth_type' not in columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN auth_type TEXT DEFAULT 'none'")
+        if 'username' not in columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN username TEXT")
+        if 'password_hash' not in columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN password_hash TEXT")
+        if 'secret_token' not in columns:
+            conn.execute("ALTER TABLE channels ADD COLUMN secret_token TEXT")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,6 +124,69 @@ class Channel:
         with get_db() as conn:
             cursor = conn.execute("DELETE FROM channels WHERE id = ?", (channel_id,))
             return cursor.rowcount > 0
+
+    @staticmethod
+    def get_by_token(token: str) -> dict | None:
+        """Get a channel by its secret token."""
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT * FROM channels WHERE secret_token = ?",
+                (token,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def update_auth(channel_id: int, auth_type: str, username: str = None,
+                    password: str = None) -> str | None:
+        """
+        Update authentication settings for a channel.
+        Returns the secret token if auth_type is 'token'.
+        """
+        with get_db() as conn:
+            if auth_type == 'none':
+                conn.execute(
+                    """UPDATE channels SET auth_type = 'none',
+                       username = NULL, password_hash = NULL, secret_token = NULL
+                       WHERE id = ?""",
+                    (channel_id,)
+                )
+                return None
+
+            elif auth_type == 'basic':
+                if not username or not password:
+                    raise ValueError("Username and password required for basic auth")
+                conn.execute(
+                    """UPDATE channels SET auth_type = 'basic',
+                       username = ?, password_hash = ?, secret_token = NULL
+                       WHERE id = ?""",
+                    (username, hash_password(password), channel_id)
+                )
+                return None
+
+            elif auth_type == 'token':
+                token = generate_token()
+                conn.execute(
+                    """UPDATE channels SET auth_type = 'token',
+                       username = NULL, password_hash = NULL, secret_token = ?
+                       WHERE id = ?""",
+                    (token, channel_id)
+                )
+                return token
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+    @staticmethod
+    def verify_basic_auth(channel_id: int, username: str, password: str) -> bool:
+        """Verify basic auth credentials for a channel."""
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT username, password_hash FROM channels WHERE id = ?",
+                (channel_id,)
+            ).fetchone()
+            if not row:
+                return False
+            return row['username'] == username and row['password_hash'] == hash_password(password)
 
 
 class Episode:

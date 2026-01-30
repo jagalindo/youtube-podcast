@@ -9,7 +9,7 @@ def generate_feed(channel: dict, episodes: list) -> str:
     Generate a podcast RSS 2.0 feed with iTunes extensions.
 
     Args:
-        channel: Channel dict with id, name, youtube_channel_id, url
+        channel: Channel dict with id, name, youtube_channel_id, url, auth_type, secret_token
         episodes: List of episode dicts
 
     Returns:
@@ -18,11 +18,18 @@ def generate_feed(channel: dict, episodes: list) -> str:
     fg = FeedGenerator()
     fg.load_extension('podcast')
 
+    # Determine feed URL based on auth type
+    auth_type = channel.get('auth_type', 'none')
+    if auth_type == 'token' and channel.get('secret_token'):
+        feed_url = f"{BASE_URL}/feed/t/{channel['secret_token']}"
+    else:
+        feed_url = f"{BASE_URL}/feed/{channel['id']}"
+
     # Channel metadata
     fg.title(channel['name'])
     fg.description(f"Podcast feed for YouTube channel: {channel['name']}")
     fg.link(href=channel['url'], rel='alternate')
-    fg.link(href=f"{BASE_URL}/feed/{channel['id']}", rel='self')
+    fg.link(href=feed_url, rel='self')
     fg.language('en')
     fg.generator('YouTube Podcast Generator')
 
@@ -58,8 +65,11 @@ def generate_feed(channel: dict, episodes: list) -> str:
                 pub_date = pub_date.replace(tzinfo=timezone.utc)
             fe.published(pub_date)
 
-        # Audio enclosure
-        audio_url = f"{BASE_URL}/audio/{ep['audio_path']}"
+        # Audio enclosure - use token URL if token auth is enabled
+        if auth_type == 'token' and channel.get('secret_token'):
+            audio_url = f"{BASE_URL}/audio/t/{channel['secret_token']}/{ep['audio_path']}"
+        else:
+            audio_url = f"{BASE_URL}/audio/{ep['audio_path']}"
         file_size = get_audio_file_size(ep['audio_path'])
         mime_type = f"audio/{AUDIO_FORMAT}"
 

@@ -1,11 +1,53 @@
 import os
 import logging
+from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response
 from config import HOST, PORT, AUDIO_DIR, BASE_URL
 from models import init_db, Channel, Episode
 from downloader import extract_channel_id, fetch_channel_videos, get_video_metadata, download_audio
 from feed_generator import generate_feed
 from scheduler import create_scheduler, refresh_channel, refresh_all_channels
+
+
+def check_auth(channel):
+    """Check if request is authorized for the given channel."""
+    auth_type = channel.get('auth_type', 'none')
+
+    if auth_type == 'none':
+        return True
+
+    if auth_type == 'basic':
+        auth = request.authorization
+        if not auth:
+            return False
+        return Channel.verify_basic_auth(channel['id'], auth.username, auth.password)
+
+    if auth_type == 'token':
+        # Token auth is handled by separate route
+        return False
+
+    return False
+
+
+def require_auth(f):
+    """Decorator to require authentication for a route."""
+    @wraps(f)
+    def decorated(channel_id, *args, **kwargs):
+        channel = Channel.get_by_id(channel_id)
+        if not channel:
+            return jsonify({'error': 'Channel not found'}), 404
+
+        if not check_auth(channel):
+            if channel.get('auth_type') == 'token':
+                return jsonify({'error': 'This feed requires token access. Use the token URL.'}), 401
+            return Response(
+                'Authentication required',
+                401,
+                {'WWW-Authenticate': 'Basic realm="Podcast Feed"'}
+            )
+
+        return f(channel_id, channel=channel, *args, **kwargs)
+    return decorated
 
 # Configure logging
 logging.basicConfig(
@@ -30,7 +72,9 @@ HTML_TEMPLATE = """
                max-width: 800px; margin: 50px auto; padding: 20px; background: #f5f5f5; }
         h1 { color: #333; }
         .card { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-        input[type="text"] { width: 70%; padding: 10px; font-size: 16px; border: 1px solid #ddd; border-radius: 4px; }
+        input[type="text"], input[type="password"], select {
+            padding: 8px; font-size: 14px; border: 1px solid #ddd; border-radius: 4px; margin: 2px; }
+        input.url-input { width: 70%; }
         button { padding: 10px 20px; font-size: 16px; background: #ff0000; color: white; border: none;
                  border-radius: 4px; cursor: pointer; margin-left: 10px; }
         button:hover { background: #cc0000; }
@@ -38,26 +82,36 @@ HTML_TEMPLATE = """
         button.secondary:hover { background: #444; }
         button.danger { background: #dc3545; }
         button.danger:hover { background: #c82333; }
-        .channel { display: flex; justify-content: space-between; align-items: center;
-                   padding: 15px; border-bottom: 1px solid #eee; }
+        button.small { padding: 5px 10px; font-size: 12px; margin-left: 5px; }
+        .channel { padding: 15px; border-bottom: 1px solid #eee; }
         .channel:last-child { border-bottom: none; }
+        .channel-header { display: flex; justify-content: space-between; align-items: center; }
         .channel-name { font-weight: bold; font-size: 18px; }
         .channel-actions { display: flex; gap: 10px; }
-        .feed-url { font-size: 12px; color: #666; word-break: break-all; }
+        .feed-url { font-size: 12px; color: #666; word-break: break-all; margin: 8px 0; }
         .feed-url a { color: #0066cc; }
+        .feed-url code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }
+        .auth-section { margin-top: 10px; padding: 10px; background: #f9f9f9; border-radius: 4px; font-size: 13px; }
+        .auth-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-size: 11px; margin-left: 10px; }
+        .auth-badge.none { background: #e9ecef; color: #495057; }
+        .auth-badge.basic { background: #cce5ff; color: #004085; }
+        .auth-badge.token { background: #d4edda; color: #155724; }
+        .auth-form { margin-top: 8px; }
+        .auth-form input { margin-right: 5px; }
         .loading { display: none; color: #666; font-style: italic; }
         .message { padding: 10px; margin: 10px 0; border-radius: 4px; }
         .message.success { background: #d4edda; color: #155724; }
         .message.error { background: #f8d7da; color: #721c24; }
+        .hidden { display: none; }
     </style>
 </head>
 <body>
-    <h1>🎙️ YouTube Podcast Generator</h1>
+    <h1>YouTube Podcast Generator</h1>
 
     <div class="card">
         <h2>Add YouTube Channel</h2>
         <form id="add-form">
-            <input type="text" id="channel-url" placeholder="YouTube channel URL, @handle, or channel ID" required>
+            <input type="text" id="channel-url" class="url-input" placeholder="YouTube channel URL, @handle, or channel ID" required>
             <button type="submit">Add Channel</button>
         </form>
         <p class="loading" id="add-loading">Adding channel and downloading videos...</p>
@@ -73,6 +127,20 @@ HTML_TEMPLATE = """
     <script>
         const BASE_URL = '""" + BASE_URL + """';
 
+        function getAuthBadge(authType) {
+            const labels = { none: 'Public', basic: 'Password', token: 'Token' };
+            return `<span class="auth-badge ${authType}">${labels[authType] || 'Public'}</span>`;
+        }
+
+        function getFeedUrl(ch) {
+            if (ch.auth_type === 'token' && ch.secret_token) {
+                return `${BASE_URL}/feed/t/${ch.secret_token}`;
+            } else if (ch.auth_type === 'basic' && ch.username) {
+                return `${BASE_URL.replace('://', '://' + ch.username + ':PASSWORD@')}/feed/${ch.id}`;
+            }
+            return `${BASE_URL}/feed/${ch.id}`;
+        }
+
         async function loadChannels() {
             const response = await fetch('/channels');
             const channels = await response.json();
@@ -85,18 +153,75 @@ HTML_TEMPLATE = """
 
             list.innerHTML = channels.map(ch => `
                 <div class="channel">
-                    <div>
-                        <div class="channel-name">${ch.name}</div>
-                        <div class="feed-url">
-                            RSS Feed: <a href="/feed/${ch.id}" target="_blank">${BASE_URL}/feed/${ch.id}</a>
+                    <div class="channel-header">
+                        <div>
+                            <span class="channel-name">${ch.name}</span>
+                            ${getAuthBadge(ch.auth_type || 'none')}
+                        </div>
+                        <div class="channel-actions">
+                            <button class="secondary small" onclick="refreshChannel(${ch.id})">Refresh</button>
+                            <button class="danger small" onclick="deleteChannel(${ch.id})">Delete</button>
                         </div>
                     </div>
-                    <div class="channel-actions">
-                        <button class="secondary" onclick="refreshChannel(${ch.id})">Refresh</button>
-                        <button class="danger" onclick="deleteChannel(${ch.id})">Delete</button>
+                    <div class="feed-url">
+                        RSS Feed: <code>${getFeedUrl(ch)}</code>
+                        <a href="${ch.auth_type === 'token' ? getFeedUrl(ch) : '/feed/' + ch.id}" target="_blank">(open)</a>
+                    </div>
+                    <div class="auth-section">
+                        <strong>Authentication:</strong>
+                        <select id="auth-type-${ch.id}" onchange="toggleAuthForm(${ch.id})">
+                            <option value="none" ${ch.auth_type === 'none' ? 'selected' : ''}>None (Public)</option>
+                            <option value="basic" ${ch.auth_type === 'basic' ? 'selected' : ''}>Password (HTTP Basic)</option>
+                            <option value="token" ${ch.auth_type === 'token' ? 'selected' : ''}>Secret Token URL</option>
+                        </select>
+                        <div id="auth-form-${ch.id}" class="auth-form">
+                            <span id="basic-fields-${ch.id}" class="${ch.auth_type === 'basic' ? '' : 'hidden'}">
+                                <input type="text" id="username-${ch.id}" placeholder="Username" value="${ch.username || ''}">
+                                <input type="password" id="password-${ch.id}" placeholder="Password">
+                            </span>
+                            <button class="secondary small" onclick="saveAuth(${ch.id})">Save</button>
+                        </div>
                     </div>
                 </div>
             `).join('');
+        }
+
+        function toggleAuthForm(id) {
+            const authType = document.getElementById(`auth-type-${id}`).value;
+            const basicFields = document.getElementById(`basic-fields-${id}`);
+            basicFields.classList.toggle('hidden', authType !== 'basic');
+        }
+
+        async function saveAuth(id) {
+            const authType = document.getElementById(`auth-type-${id}`).value;
+            const username = document.getElementById(`username-${id}`)?.value;
+            const password = document.getElementById(`password-${id}`)?.value;
+
+            const body = { auth_type: authType };
+            if (authType === 'basic') {
+                if (!username || !password) {
+                    alert('Username and password are required');
+                    return;
+                }
+                body.username = username;
+                body.password = password;
+            }
+
+            const response = await fetch(`/channels/${id}/auth`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+
+            const data = await response.json();
+            if (response.ok) {
+                if (data.token) {
+                    alert('Token generated! Your feed URL has been updated.');
+                }
+                loadChannels();
+            } else {
+                alert('Error: ' + data.error);
+            }
         }
 
         document.getElementById('add-form').addEventListener('submit', async (e) => {
@@ -133,7 +258,6 @@ HTML_TEMPLATE = """
 
         async function deleteChannel(id) {
             if (!confirm('Are you sure? This will delete all downloaded episodes.')) return;
-
             await fetch(`/channels/${id}`, { method: 'DELETE' });
             loadChannels();
         }
@@ -235,22 +359,106 @@ def delete_channel(channel_id):
 
 
 @app.route('/feed/<int:channel_id>')
-def get_feed(channel_id):
-    """Get RSS feed for a channel."""
-    channel = Channel.get_by_id(channel_id)
-    if not channel:
-        return jsonify({'error': 'Channel not found'}), 404
-
+@require_auth
+def get_feed(channel_id, channel=None):
+    """Get RSS feed for a channel (with auth check)."""
     episodes = Episode.get_by_channel(channel_id)
     rss = generate_feed(channel, episodes)
+    return Response(rss, mimetype='application/rss+xml')
 
+
+@app.route('/feed/t/<token>')
+def get_feed_by_token(token):
+    """Get RSS feed using secret token."""
+    channel = Channel.get_by_token(token)
+    if not channel:
+        return jsonify({'error': 'Invalid token'}), 404
+
+    if channel.get('auth_type') != 'token':
+        return jsonify({'error': 'Token access not enabled for this channel'}), 403
+
+    episodes = Episode.get_by_channel(channel['id'])
+    rss = generate_feed(channel, episodes)
     return Response(rss, mimetype='application/rss+xml')
 
 
 @app.route('/audio/<filename>')
 def serve_audio(filename):
-    """Serve audio files."""
+    """Serve audio files (with auth check based on episode's channel)."""
+    # Extract video_id from filename (format: video_id.mp3)
+    video_id = filename.rsplit('.', 1)[0] if '.' in filename else filename
+
+    episode = Episode.get_by_video_id(video_id)
+    if not episode:
+        return jsonify({'error': 'Audio not found'}), 404
+
+    channel = Channel.get_by_id(episode['channel_id'])
+    if not channel:
+        return jsonify({'error': 'Channel not found'}), 404
+
+    # Check authentication
+    if not check_auth(channel):
+        if channel.get('auth_type') == 'token':
+            # For token auth, check if token is in query string
+            token = request.args.get('token')
+            if token != channel.get('secret_token'):
+                return jsonify({'error': 'Authentication required'}), 401
+        else:
+            return Response(
+                'Authentication required',
+                401,
+                {'WWW-Authenticate': 'Basic realm="Podcast Audio"'}
+            )
+
     return send_from_directory(AUDIO_DIR, filename)
+
+
+@app.route('/audio/t/<token>/<filename>')
+def serve_audio_by_token(token, filename):
+    """Serve audio files using token authentication."""
+    channel = Channel.get_by_token(token)
+    if not channel:
+        return jsonify({'error': 'Invalid token'}), 404
+
+    # Verify the audio belongs to this channel
+    video_id = filename.rsplit('.', 1)[0] if '.' in filename else filename
+    episode = Episode.get_by_video_id(video_id)
+
+    if not episode or episode['channel_id'] != channel['id']:
+        return jsonify({'error': 'Audio not found'}), 404
+
+    return send_from_directory(AUDIO_DIR, filename)
+
+
+@app.route('/channels/<int:channel_id>/auth', methods=['POST'])
+def update_channel_auth(channel_id):
+    """Update authentication settings for a channel."""
+    channel = Channel.get_by_id(channel_id)
+    if not channel:
+        return jsonify({'error': 'Channel not found'}), 404
+
+    data = request.get_json()
+    auth_type = data.get('auth_type', 'none')
+
+    try:
+        if auth_type == 'basic':
+            username = data.get('username')
+            password = data.get('password')
+            if not username or not password:
+                return jsonify({'error': 'Username and password required'}), 400
+            Channel.update_auth(channel_id, 'basic', username=username, password=password)
+            return jsonify({'success': True, 'auth_type': 'basic'})
+
+        elif auth_type == 'token':
+            token = Channel.update_auth(channel_id, 'token')
+            return jsonify({'success': True, 'auth_type': 'token', 'token': token})
+
+        else:
+            Channel.update_auth(channel_id, 'none')
+            return jsonify({'success': True, 'auth_type': 'none'})
+
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @app.route('/refresh', methods=['POST'])
