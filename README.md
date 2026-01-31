@@ -75,7 +75,20 @@ You can add channels using any of these formats:
 
 ## Authentication
 
-You can protect your feeds with authentication to prevent unauthorized access. Two methods are available:
+### Global Admin Password
+
+Protect the web interface and management API with a password:
+
+```bash
+export ADMIN_PASSWORD="your-secret-password"
+python app.py
+```
+
+When set, accessing the web UI or any management endpoint requires HTTP Basic authentication. You can use any username - only the password is checked. Feed and audio endpoints remain accessible to podcast apps with their own per-channel auth.
+
+### Per-Channel Feed Authentication
+
+You can protect individual feeds with authentication to prevent unauthorized access. Two methods are available:
 
 ### HTTP Basic Authentication
 
@@ -187,6 +200,7 @@ Configuration is managed in `config.py` or via environment variables:
 | `BASE_URL` | `http://localhost:5000` | Public URL for feed links |
 | `CHECK_INTERVAL_HOURS` | `1` | Hours between automatic refreshes |
 | `INITIAL_FETCH_COUNT` | `10` | Number of videos to fetch per channel |
+| `ADMIN_PASSWORD` | (none) | Password for admin interface (recommended when exposed) |
 
 ### Environment Variables
 
@@ -267,6 +281,7 @@ Create `/home/podcast/youtube-podcast/.env` (replace `YOUR_CONTAINER_IP` with ac
 HOST=0.0.0.0
 PORT=5000
 BASE_URL=http://YOUR_CONTAINER_IP:5000
+ADMIN_PASSWORD=your-secret-password
 ```
 
 ### 5. Create Systemd Service

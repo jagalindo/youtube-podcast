@@ -23,3 +23,6 @@ CHECK_INTERVAL_HOURS = int(os.getenv("CHECK_INTERVAL_HOURS", 1))
 INITIAL_FETCH_COUNT = int(os.getenv("INITIAL_FETCH_COUNT", 10))
 AUDIO_FORMAT = "mp3"
 AUDIO_BITRATE = "192"
+
+# Admin authentication (required when set)
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")

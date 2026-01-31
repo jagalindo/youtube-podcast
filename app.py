@@ -2,7 +2,7 @@ import os
 import logging
 from functools import wraps
 from flask import Flask, request, jsonify, send_from_directory, Response
-from config import HOST, PORT, AUDIO_DIR, BASE_URL
+from config import HOST, PORT, AUDIO_DIR, BASE_URL, ADMIN_PASSWORD
 from models import init_db, Channel, Episode
 from downloader import extract_channel_id, fetch_channel_videos, get_video_metadata, download_audio
 from feed_generator import generate_feed
@@ -47,6 +47,26 @@ def require_auth(f):
             )
 
         return f(channel_id, channel=channel, *args, **kwargs)
+    return decorated
+
+
+def require_admin_auth(f):
+    """Decorator to require admin authentication for management routes."""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not ADMIN_PASSWORD:
+            # No password set, allow access
+            return f(*args, **kwargs)
+
+        auth = request.authorization
+        if not auth or auth.password != ADMIN_PASSWORD:
+            return Response(
+                'Admin authentication required',
+                401,
+                {'WWW-Authenticate': 'Basic realm="Admin"'}
+            )
+
+        return f(*args, **kwargs)
     return decorated
 
 # Configure logging
@@ -284,12 +304,14 @@ HTML_TEMPLATE = """
 
 
 @app.route('/')
+@require_admin_auth
 def index():
     """Serve the web UI."""
     return HTML_TEMPLATE
 
 
 @app.route('/channels', methods=['GET'])
+@require_admin_auth
 def list_channels():
     """List all channels."""
     channels = Channel.get_all()
@@ -297,6 +319,7 @@ def list_channels():
 
 
 @app.route('/channels', methods=['POST'])
+@require_admin_auth
 def add_channel():
     """Add a new YouTube channel."""
     data = request.get_json()
@@ -337,6 +360,7 @@ def add_channel():
 
 
 @app.route('/channels/<int:channel_id>', methods=['DELETE'])
+@require_admin_auth
 def delete_channel(channel_id):
     """Delete a channel and its episodes."""
     channel = Channel.get_by_id(channel_id)
@@ -431,6 +455,7 @@ def serve_audio_by_token(token, filename):
 
 
 @app.route('/channels/<int:channel_id>/auth', methods=['POST'])
+@require_admin_auth
 def update_channel_auth(channel_id):
     """Update authentication settings for a channel."""
     channel = Channel.get_by_id(channel_id)
@@ -462,6 +487,7 @@ def update_channel_auth(channel_id):
 
 
 @app.route('/refresh', methods=['POST'])
+@require_admin_auth
 def refresh_all():
     """Manually trigger refresh of all channels."""
     refresh_all_channels()
@@ -469,6 +495,7 @@ def refresh_all():
 
 
 @app.route('/refresh/<int:channel_id>', methods=['POST'])
+@require_admin_auth
 def refresh_single(channel_id):
     """Manually trigger refresh of a single channel."""
     channel = Channel.get_by_id(channel_id)
